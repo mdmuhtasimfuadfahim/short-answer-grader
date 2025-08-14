@@ -1,0 +1,21 @@
+{
+  "name": "short-answer-grader",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "train": "node src/model/train.js",
+    "predict": "node src/model/predict.js",
+    "test": "jest --runInBand"
+  },
+  "dependencies": {
+    "@tensorflow-models/universal-sentence-encoder": "^1.3.3",
+    "@tensorflow/tfjs-node": "^4.19.0",
+    "dotenv": "^17.2.1",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

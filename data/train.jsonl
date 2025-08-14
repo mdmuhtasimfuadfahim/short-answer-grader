@@ -1,0 +1,4 @@
+{"student":"nn has nodes and weights","reference":"a neural network has nodes and weights","rubric":["nodes","weights","training"],"score":5}
+{"student":"random words without meaning","reference":"a neural network has nodes and weights","rubric":["nodes","weights","training"],"score":1}
+{"student":"training adjusts weights","reference":"model learns by adjusting weights during training","rubric":["training","weights"],"score":5}
+{"student":"no relation to topic","reference":"model learns by adjusting weights during training","rubric":["training","weights"],"score":1}

@@ -1,0 +1,20 @@
+{
+    "q1": {
+        "reference": "A neural network is a machine learning model inspired by neurons and their weighted connections",
+        "rubric": [
+            "machine learning",
+            "nodes",
+            "connections",
+            "training"
+        ]
+    },
+    "q2": {
+        "reference": "Convolutional Neural Networks are specialized neural networks for processing grid-like data such as images",
+        "rubric": [
+            "neural network",
+            "convolution",
+            "feature map",
+            "pooling"
+        ]
+    }
+}

@@ -1,0 +1,2 @@
+{"student":"neural nets learn by tuning weights","reference":"model learns by adjusting weights during training","rubric":["training","weights"],"score":5}
+{"student":"irrelevant sentence here","reference":"a neural network has nodes and weights","rubric":["nodes","weights"],"score":1}
