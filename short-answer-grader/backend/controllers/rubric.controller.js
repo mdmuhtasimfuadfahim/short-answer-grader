@@ -1,0 +1,327 @@
+/**
+ * Rubric controller
+ */
+const Rubric = require('../models/Rubric');
+const Question = require('../models/Question');
+
+/**
+ * Create a new rubric
+ * POST /api/rubrics
+ */
+const createRubric = async (req, res) => {
+    try {
+        const { name, description, dimensions, questionId, isTemplate } = req.body;
+        
+        // Validate dimensions
+        if (!dimensions || dimensions.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'At least one rubric dimension is required'
+            });
+        }
+        
+        const rubric = new Rubric({
+            name,
+            description,
+            dimensions: dimensions.map((dim, idx) => ({
+                name: dim.name,
+                description: dim.description,
+                weight: dim.weight || 1.0,
+                maxPoints: dim.maxPoints || 100,
+                keywords: dim.keywords || [],
+                order: dim.order !== undefined ? dim.order : idx
+            })),
+            question: questionId || null,
+            createdBy: req.userId,
+            isTemplate: isTemplate || false
+        });
+        
+        await rubric.save();
+        
+        // Link rubric to question if specified
+        if (questionId) {
+            await Question.findByIdAndUpdate(questionId, { rubric: rubric._id });
+        }
+        
+        res.status(201).json({
+            success: true,
+            message: 'Rubric created successfully',
+            data: rubric
+        });
+    } catch (error) {
+        console.error('Create rubric error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to create rubric'
+        });
+    }
+};
+
+/**
+ * Get all rubrics for the user
+ * GET /api/rubrics
+ */
+const getRubrics = async (req, res) => {
+    try {
+        const { templateOnly, questionId } = req.query;
+        
+        const query = { createdBy: req.userId };
+        
+        if (templateOnly === 'true') {
+            query.isTemplate = true;
+        }
+        
+        if (questionId) {
+            query.question = questionId;
+        }
+        
+        const rubrics = await Rubric.find(query)
+            .populate('question', 'title')
+            .sort({ createdAt: -1 });
+        
+        res.json({
+            success: true,
+            data: rubrics
+        });
+    } catch (error) {
+        console.error('Get rubrics error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to get rubrics'
+        });
+    }
+};
+
+/**
+ * Get single rubric by ID
+ * GET /api/rubrics/:id
+ */
+const getRubric = async (req, res) => {
+    try {
+        const rubric = await Rubric.findById(req.params.id)
+            .populate('question', 'title content')
+            .populate('createdBy', 'name email');
+        
+        if (!rubric) {
+            return res.status(404).json({
+                success: false,
+                message: 'Rubric not found'
+            });
+        }
+        
+        res.json({
+            success: true,
+            data: rubric
+        });
+    } catch (error) {
+        console.error('Get rubric error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to get rubric'
+        });
+    }
+};
+
+/**
+ * Update rubric
+ * PUT /api/rubrics/:id
+ */
+const updateRubric = async (req, res) => {
+    try {
+        const rubric = await Rubric.findById(req.params.id);
+        
+        if (!rubric) {
+            return res.status(404).json({
+                success: false,
+                message: 'Rubric not found'
+            });
+        }
+        
+        // Check ownership
+        if (rubric.createdBy.toString() !== req.userId.toString()) {
+            return res.status(403).json({
+                success: false,
+                message: 'Not authorized to update this rubric'
+            });
+        }
+        
+        const { name, description, dimensions, isTemplate } = req.body;
+        
+        if (name) rubric.name = name;
+        if (description !== undefined) rubric.description = description;
+        if (isTemplate !== undefined) rubric.isTemplate = isTemplate;
+        
+        if (dimensions && dimensions.length > 0) {
+            rubric.dimensions = dimensions.map((dim, idx) => ({
+                name: dim.name,
+                description: dim.description,
+                weight: dim.weight || 1.0,
+                maxPoints: dim.maxPoints || 100,
+                keywords: dim.keywords || [],
+                order: dim.order !== undefined ? dim.order : idx
+            }));
+        }
+        
+        await rubric.save();
+        
+        res.json({
+            success: true,
+            message: 'Rubric updated successfully',
+            data: rubric
+        });
+    } catch (error) {
+        console.error('Update rubric error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to update rubric'
+        });
+    }
+};
+
+/**
+ * Delete rubric
+ * DELETE /api/rubrics/:id
+ */
+const deleteRubric = async (req, res) => {
+    try {
+        const rubric = await Rubric.findById(req.params.id);
+        
+        if (!rubric) {
+            return res.status(404).json({
+                success: false,
+                message: 'Rubric not found'
+            });
+        }
+        
+        // Check ownership
+        if (rubric.createdBy.toString() !== req.userId.toString()) {
+            return res.status(403).json({
+                success: false,
+                message: 'Not authorized to delete this rubric'
+            });
+        }
+        
+        // Remove rubric reference from question
+        if (rubric.question) {
+            await Question.findByIdAndUpdate(rubric.question, { $unset: { rubric: 1 } });
+        }
+        
+        await Rubric.findByIdAndDelete(req.params.id);
+        
+        res.json({
+            success: true,
+            message: 'Rubric deleted successfully'
+        });
+    } catch (error) {
+        console.error('Delete rubric error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to delete rubric'
+        });
+    }
+};
+
+/**
+ * Clone a rubric (for templates)
+ * POST /api/rubrics/:id/clone
+ */
+const cloneRubric = async (req, res) => {
+    try {
+        const sourceRubric = await Rubric.findById(req.params.id);
+        
+        if (!sourceRubric) {
+            return res.status(404).json({
+                success: false,
+                message: 'Rubric not found'
+            });
+        }
+        
+        const { questionId, name } = req.body;
+        
+        const newRubric = new Rubric({
+            name: name || `${sourceRubric.name} (Copy)`,
+            description: sourceRubric.description,
+            dimensions: sourceRubric.dimensions.map(dim => ({
+                name: dim.name,
+                description: dim.description,
+                weight: dim.weight,
+                maxPoints: dim.maxPoints,
+                keywords: [...dim.keywords],
+                order: dim.order
+            })),
+            question: questionId || null,
+            createdBy: req.userId,
+            isTemplate: false,
+            isAutoGenerated: false
+        });
+        
+        await newRubric.save();
+        
+        // Link to question if specified
+        if (questionId) {
+            await Question.findByIdAndUpdate(questionId, { rubric: newRubric._id });
+        }
+        
+        res.status(201).json({
+            success: true,
+            message: 'Rubric cloned successfully',
+            data: newRubric
+        });
+    } catch (error) {
+        console.error('Clone rubric error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to clone rubric'
+        });
+    }
+};
+
+/**
+ * Normalize rubric weights
+ * POST /api/rubrics/:id/normalize
+ */
+const normalizeWeights = async (req, res) => {
+    try {
+        const rubric = await Rubric.findById(req.params.id);
+        
+        if (!rubric) {
+            return res.status(404).json({
+                success: false,
+                message: 'Rubric not found'
+            });
+        }
+        
+        // Check ownership
+        if (rubric.createdBy.toString() !== req.userId.toString()) {
+            return res.status(403).json({
+                success: false,
+                message: 'Not authorized to modify this rubric'
+            });
+        }
+        
+        rubric.normalizeWeights();
+        await rubric.save();
+        
+        res.json({
+            success: true,
+            message: 'Weights normalized successfully',
+            data: rubric
+        });
+    } catch (error) {
+        console.error('Normalize weights error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to normalize weights'
+        });
+    }
+};
+
+module.exports = {
+    createRubric,
+    getRubrics,
+    getRubric,
+    updateRubric,
+    deleteRubric,
+    cloneRubric,
+    normalizeWeights
+};

@@ -1,0 +1,256 @@
+IMPLEMENTATION GUIDE FOR REPRODUCIBILITY
+Project: Towards Explainable Automated Short Answer Grading using Language Models and Rubric-Aware Evaluation
+Author: Md. Muhtasim Fuad Fahim
+ID: 221043003
+Course: CSE 6231 - Deep Learning
+
+----------------------------------------------------------------------
+1) TECHNOLOGY STACK (recommended versions)
+----------------------------------------------------------------------
+- Node.js v18.x or v20.x
+- npm or yarn (latest stable)
+- Express.js (backend)
+- React.js (frontend, Create React App or Vite)
+- Python 3.10 or 3.11
+- PyTorch 2.0+ (or compatible)
+- HuggingFace Transformers
+- Sentence-Transformers (sentence-transformers)
+- scikit-learn
+- FastAPI (recommended) or Flask (alternate)
+- uvicorn (for FastAPI)
+- optional: ONNX + onnxruntime for quantized inference
+- optional: Streamlit (for demo UI)
+- optional: Tesseract OCR (if supporting handwritten answers)
+- Database: PostgreSQL / MongoDB / SQLite (for prototype)
+- Docker (optional, for containerization)
+
+----------------------------------------------------------------------
+2) FOLDER / REPO STRUCTURE (single top-level project folder)
+----------------------------------------------------------------------
+/project-root
+  /backend               # Node.js + Express server
+    package.json
+    server.js
+    /routes
+    /controllers
+    /models              # DB models (or ORM)
+    /utils
+  /frontend              # React app
+    package.json
+    /src
+      /components
+      /pages
+      /api
+  /ml-service            # Python ML microservice (FastAPI)
+    requirements.txt
+    app.py               # FastAPI entrypoint
+    inference.py         # inference functions
+    train.py             # training pipeline
+    /models              # saved model files (checkpoint folders)
+    /utils               # preprocessing, scorer, explainability utilities
+  /data                  # raw + processed dataset files
+    /ASAG2024
+    /SAF_CN
+    /SEACrowd_ID
+  /docs                  # notes, schemas, experiment logs
+  implementation_guide.txt
+  README.md
+
+----------------------------------------------------------------------
+3) HIGH-LEVEL PIPELINE (step-by-step)
+----------------------------------------------------------------------
+1. Dataset ingestion:
+   - Download datasets (ASAG2024, SAF Communication Networks, SEACrowd ID) from HuggingFace.
+   - Place raw files into /data/<dataset>.
+   - Run a preprocessing script to standardize file formats (CSV/JSON), normalize scores to [0,1], and split into train/val/test.
+
+2. Preprocessing:
+   - Minimal cleaning: unicode normalization, collapse whitespace, optional lowercasing.
+   - Preserve domain-specific tokens (do NOT aggressively remove punctuation that may matter).
+   - For each question, split reference answer into candidate rubric-dim phrases:
+       * Heuristic: sentence-split reference; split on semicolons/commas if they separate independent facts.
+       * Optionally: teacher-curated rubrics override heuristics.
+   - Create train records as tuples: (question_id, rubric_dims: [r1, r2,...], student_answer, true_score).
+
+3. Rubric encoding:
+   - For each rubric dimension r_j, build a short canonical phrase or extract a short sentence from reference answer.
+   - Optionally augment with synonyms or paraphrases.
+
+4. Embedding generation:
+   - Choose encoder: MiniLM (fast), SBERT (balanced), DeBERTa-v3 (highest accuracy).
+   - Implementation note: do not attempt to run these models in Node; use a Python microservice to host embeddings and scoring endpoints.
+   - For each text input, generate a fixed-dim vector: v = E(text).
+
+5. Similarity computation:
+   - Compute cosine similarity between student embedding and each rubric-dim embedding.
+   - Rescale similarity to [0,1]: score_dim = (cos(sim)+1)/2.
+
+6. Scoring logic:
+   - Per-dimension scoring: compute score_dim for all dimensions.
+   - Aggregation: weighted sum or average: overall_score = sum(w_j * score_dim_j).
+   - Weights w_j either:
+        * set by teacher, or
+        * learned (simple linear regression on training set predictions vs true scores).
+
+7. Contrastive training (to penalize bluffing):
+   - Construct positive pairs: (student_answer_correct, rubric_dim).
+   - Construct negatives:
+        * student answers to different questions,
+        * artificially keyword-stuffed answers,
+        * perturbed paraphrases with meaning changes.
+   - Use InfoNCE loss (cross-entropy over in-batch negatives) with temperature tau.
+   - Combine with regression loss that maps aggregated predictions to human score (e.g., MSE).
+   - Total loss = alpha * contrastive_loss + beta * regression_loss. Tune alpha/beta.
+
+8. Explainability module:
+   - For each dimension, compute token-level contribution:
+        * Option A: use Integrated Gradients on encoder's token embeddings (requires gradient).
+        * Option B: use attention weights or cosine similarity over n-gram embeddings as heuristic.
+   - Return top-k spans contributing positively to the dimension similarity.
+   - Build template-based textual feedback using the score and spans (e.g., "Dimension: Concept Understanding — MENTIONED: '...'; MISSING: '...'").
+
+9. API exposure:
+   - ML service exposes REST endpoints:
+       * POST /embed  -> returns embedding for input text
+       * POST /grade  -> input: {question_id, student_answer, rubric_dims(optional)}; returns: {overall_score, per_dimension_scores, confidence, highlights, feedback}
+       * POST /train  -> trigger training (for admin)
+   - Node backend calls ML service to perform grading; Node manages sessions, DB, and user roles.
+
+10. Frontend visualization:
+    - Teacher UI: create/edit rubrics, upload reference answers, review aggregated class stats.
+    - Student UI: submit answers, view rubric-dimension bars (progress bars), highlighted evidence spans, confidence, and textual feedback.
+    - Visualization: use charts (e.g., horizontal bars), colored text spans, and a score breakdown table.
+
+----------------------------------------------------------------------
+4) HIGH-LEVEL PSEUDOCODE (no executable code)
+----------------------------------------------------------------------
+--- Training pseudocode ---
+1. Load training dataset with entries: (question_id, rubric_dims, student_answer, true_score)
+2. Initialize encoder E with selected pretrained weights
+3. For epoch in 1..N:
+     For batch in training_data:
+         For each record in batch:
+             v_r_list = [E(r) for r in rubric_dims]
+             v_s = E(student_answer)
+             sim_list = [cosine(v_s, v_r) for v_r in v_r_list]
+             score_pred_dims = scale(sim_list)
+             overall_pred = aggregate(score_pred_dims, weights)
+         Compute regression_loss = MSE(overall_pred, true_score)
+         Build contrastive pairs (v_s vs v_r positive and negatives)
+         Compute contrastive_loss (InfoNCE)
+         total_loss = alpha * contrastive_loss + beta * regression_loss
+         Backpropagate and update encoder (and optional weight head)
+4. Save fine-tuned model
+
+--- Inference pseudocode ---
+Input: question_id, student_answer, rubric_dims (optional)
+1. If rubric_dims not provided, fetch rubric dims from DB (teacher-provided or inferred)
+2. v_s = E(student_answer)
+3. For each r_j in rubric_dims:
+     v_r = E(r_j)
+     sim = cosine(v_s, v_r)
+     score_dim = (sim+1)/2
+     highlights = explainability_top_spans(student_answer, v_r)
+     confidence = compute_confidence(sim, reference_distribution)
+4. overall = aggregate(score_dims)
+5. return JSON {overall, per_dimension:{r_j: {score:score_dim, spans:highlights, confidence}}, feedback_texts}
+
+----------------------------------------------------------------------
+5) TRAINING VS INFERENCE FLOW
+----------------------------------------------------------------------
+Training:
+ - Runs in Python environment.
+ - Loads raw datasets, preprocessing, builds rubric-dimension pairs.
+ - Fine-tunes encoder with combined contrastive + regression objectives.
+ - Stores model checkpoint to /ml-service/models/
+
+Inference:
+ - ML microservice loads model checkpoint at startup (app.py).
+ - REST API receives grading requests; performs embedding, similarity, explainability.
+ - ML service returns JSON; Node backend persists result to DB and returns to frontend.
+
+----------------------------------------------------------------------
+6) EXPECTED API INPUTS / OUTPUTS (JSON examples)
+----------------------------------------------------------------------
+POST /grade
+Request:
+{
+  "question_id": "q123",
+  "student_id": "s456",
+  "answer_text": "A neural network is a machine learning model inspired by the human brain. It has nodes and weighted connections and is trained by backprop."
+}
+
+Response:
+{
+  "overall_score": 0.82,
+  "per_dimension": {
+    "concept_correctness": {
+      "score": 0.90,
+      "confidence": 0.92,
+      "highlights": ["machine learning model", "inspired by the human brain"]
+    },
+    "key_terms": {
+      "score": 0.75,
+      "confidence": 0.78,
+      "highlights": ["nodes", "weighted connections"]
+    },
+    "training_detail": {
+      "score": 0.60,
+      "confidence": 0.65,
+      "highlights": ["backprop"]
+    }
+  },
+  "feedback": [
+    "Concept correctness strong: mentions core definition.",
+    "Key terms present but some expected terms missing.",
+    "Training detail partial: add mention of loss function or weight update steps."
+  ],
+  "metadata": {
+    "model": "MiniLM-L6-v2",
+    "model_version": "finetuned-v1",
+    "time_ms": 120
+  }
+}
+
+----------------------------------------------------------------------
+7) CONFIGURATION & DEPLOYMENT NOTES
+----------------------------------------------------------------------
+- Use Docker to containerize Node backend and Python ML service. Keep ML service pinned to GPU nodes if available.
+- For low-latency deployment, use MiniLM with ONNX quantization.
+- Keep a teacher-editable rubric store; do not attempt to infer rubrics automatically in the production loop without teacher review.
+- Log prediction metadata for future auditing (student_id, question_id, model_version, per-dim scores, highlights, timestamp).
+
+----------------------------------------------------------------------
+8) EVALUATION & TESTING
+----------------------------------------------------------------------
+- Implement metric scripts for QWK, Pearson, MAE using scikit-learn and custom QWK implementation.
+- Unit test explainability by comparing highlight overlap with human-annotated feedback (IoU or token-F1).
+- Adversarial tests:
+   * Create keyword-stuffed versions by inserting topical keywords randomly.
+   * Create fluent-but-off-topic answers by sampling fluent text from other questions.
+   * Measure metric drops and adjust contrastive sampling to improve robustness.
+
+----------------------------------------------------------------------
+9) RECOMMENDATIONS & PRACTICAL TIPS
+----------------------------------------------------------------------
+- Start with MiniLM (all-MiniLM-L6-v2) for rapid prototyping; it is small and fast and provides sentence-transformer APIs.
+- Use SBERT (all-mpnet-base-v2) when more semantic fidelity is needed but latency is acceptable.
+- Use DeBERTa-v3 for offline or high-accuracy batch grading with GPU resources.
+- Tune contrastive sampling strategy: include in-batch negatives and synthetic adversarial negatives for best robustness.
+- For explainability, IG provides principled token attributions but is slower; use attention heuristics for faster UI displays and IG for detailed teacher reports.
+
+----------------------------------------------------------------------
+10) QUICK START CHECKLIST (minimal steps to run prototype)
+----------------------------------------------------------------------
+1. Clone repo and create Python virtual env.
+2. Install /ml-service/ requirements (PyTorch, transformers, sentence-transformers, fastapi, uvicorn, scikit-learn).
+3. Download datasets to /data and run preprocessing script.
+4. Run training: python ml-service/train.py  (specify encoder and output path).
+5. Start ML service: uvicorn ml-service.app:app --host 0.0.0.0 --port 8001
+6. Start Node backend: cd backend && npm install && npm start
+7. Start React frontend: cd frontend && npm install && npm start
+8. Open frontend, create teacher rubric, test student submission and inspect feedback.
+
+----------------------------------------------------------------------
+END OF IMPLEMENTATION GUIDE
+----------------------------------------------------------------------
