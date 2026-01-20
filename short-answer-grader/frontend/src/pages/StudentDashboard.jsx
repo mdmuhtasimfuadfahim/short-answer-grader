@@ -1,15 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { questionsAPI, gradingAPI } from '../api';
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { questionsAPI, gradingAPI } from '../api';
 
 const StudentDashboard = () => {
+    const navigate = useNavigate();
     const { user } = useAuth();
     const [questions, setQuestions] = useState([]);
     const [submissions, setSubmissions] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [activeTab, setActiveTab] = useState('available');
     const [error, setError] = useState('');
-    const [activeTab, setActiveTab] = useState('questions');
 
     useEffect(() => {
         fetchData();
@@ -22,41 +23,46 @@ const StudentDashboard = () => {
                 questionsAPI.getAll(),
                 gradingAPI.getMySubmissions()
             ]);
-            setQuestions(questionsRes.data.data || []);
-            setSubmissions(submissionsRes.data.data || []);
+            
+            setQuestions(questionsRes.data.data);
+            setSubmissions(submissionsRes.data.data);
         } catch (err) {
-            setError('Failed to load data');
-            console.error(err);
+            console.error('Failed to fetch data:', err);
+            setError('Failed to load dashboard data');
         } finally {
             setLoading(false);
         }
     };
 
-    const getSubmissionForQuestion = (questionId) => {
-        return submissions.find(s => s.question?._id === questionId || s.question === questionId);
+    const handleStartAnswer = (questionId) => {
+        navigate(`/submit/${questionId}`);
+    };
+
+    const handleViewResults = (submissionId) => {
+        navigate(`/results/${submissionId}`);
     };
 
     if (loading) {
-        return <div className="loading">Loading...</div>;
+        return <div className="loading">Loading dashboard...</div>;
     }
 
     return (
-        <div className="dashboard student-dashboard">
+        <div className="student-dashboard">
             <div className="dashboard-header">
-                <h1>Welcome, {user.name}</h1>
+                <h1>Welcome, {user?.name}</h1>
                 <p>Student Dashboard</p>
             </div>
 
             {error && <div className="alert alert-error">{error}</div>}
 
-            <div className="tabs">
-                <button 
-                    className={`tab ${activeTab === 'questions' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('questions')}
+            <div className="dashboard-tabs">
+                <button
+                    className={`tab ${activeTab === 'available' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('available')}
                 >
                     Available Questions
                 </button>
-                <button 
+                <button
                     className={`tab ${activeTab === 'submissions' ? 'active' : ''}`}
                     onClick={() => setActiveTab('submissions')}
                 >
@@ -64,86 +70,80 @@ const StudentDashboard = () => {
                 </button>
             </div>
 
-            {activeTab === 'questions' && (
+            {activeTab === 'available' && (
                 <div className="questions-list">
+                    <h2>Available Questions</h2>
                     {questions.length === 0 ? (
-                        <p className="empty-state">No questions available</p>
+                        <p>No questions available at the moment.</p>
                     ) : (
-                        questions.map(question => {
-                            const submission = getSubmissionForQuestion(question._id);
-                            return (
+                        <div className="questions-grid">
+                            {questions.map((question) => (
                                 <div key={question._id} className="question-card">
-                                    <div className="question-info">
-                                        <h3>{question.title}</h3>
-                                        <p className="question-meta">
-                                            {question.subject && <span>Subject: {question.subject}</span>}
-                                            {question.topic && <span>Topic: {question.topic}</span>}
-                                            <span>Max Score: {question.maxScore}</span>
-                                        </p>
-                                    </div>
-                                    <div className="question-actions">
-                                        {submission ? (
-                                            <>
-                                                <span className={`status-badge status-${submission.status}`}>
-                                                    {submission.status}
-                                                </span>
-                                                {submission.status === 'graded' && (
-                                                    <span className="score-badge">
-                                                        {(submission.overallScore * 100).toFixed(0)}%
-                                                    </span>
-                                                )}
-                                                <Link 
-                                                    to={`/results/${submission._id}`}
-                                                    className="btn btn-secondary"
-                                                >
-                                                    View Results
-                                                </Link>
-                                            </>
-                                        ) : (
-                                            <Link 
-                                                to={`/submit/${question._id}`}
-                                                className="btn btn-primary"
-                                            >
-                                                Submit Answer
-                                            </Link>
-                                        )}
-                                    </div>
+                                    <h3>{question.title}</h3>
+                                    {question.subject && <p><strong>Subject:</strong> {question.subject}</p>}
+                                    {question.topic && <p><strong>Topic:</strong> {question.topic}</p>}
+                                    <p><strong>Max Score:</strong> {question.maxScore}</p>
+                                    {question.dueDate && (
+                                        <p><strong>Due:</strong> {new Date(question.dueDate).toLocaleDateString()}</p>
+                                    )}
+                                    <button
+                                        className="btn btn-primary"
+                                        onClick={() => handleStartAnswer(question._id)}
+                                    >
+                                        Start Answer
+                                    </button>
                                 </div>
-                            );
-                        })
+                            ))}
+                        </div>
                     )}
                 </div>
             )}
 
             {activeTab === 'submissions' && (
                 <div className="submissions-list">
+                    <h2>My Submissions</h2>
                     {submissions.length === 0 ? (
-                        <p className="empty-state">No submissions yet</p>
+                        <p>You haven't submitted any answers yet.</p>
                     ) : (
-                        submissions.map(submission => (
-                            <div key={submission._id} className="submission-card">
-                                <div className="submission-info">
-                                    <h3>{submission.question?.title || 'Question'}</h3>
-                                    <p>Submitted: {new Date(submission.submittedAt).toLocaleDateString()}</p>
-                                    <span className={`status-badge status-${submission.status}`}>
-                                        {submission.status}
-                                    </span>
-                                </div>
-                                <div className="submission-score">
-                                    {submission.status === 'graded' && (
-                                        <span className="score">
-                                            {(submission.overallScore * 100).toFixed(0)}%
-                                        </span>
-                                    )}
-                                    <Link 
-                                        to={`/results/${submission._id}`}
-                                        className="btn btn-secondary"
-                                    >
-                                        View Details
-                                    </Link>
-                                </div>
-                            </div>
-                        ))
+                        <div className="submissions-table">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Question</th>
+                                        <th>Status</th>
+                                        <th>Score</th>
+                                        <th>Submitted</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {submissions.map((submission) => (
+                                        <tr key={submission._id}>
+                                            <td>{submission.question?.title || 'N/A'}</td>
+                                            <td>
+                                                <span className={`status-badge status-${submission.status}`}>
+                                                    {submission.status}
+                                                </span>
+                                            </td>
+                                            <td>
+                                                {submission.totalScore !== undefined
+                                                    ? `${submission.totalScore}/${submission.question?.maxScore || 100}`
+                                                    : 'Pending'}
+                                            </td>
+                                            <td>{new Date(submission.createdAt).toLocaleDateString()}</td>
+                                            <td>
+                                                <button
+                                                    className="btn btn-sm btn-secondary"
+                                                    onClick={() => handleViewResults(submission._id)}
+                                                >
+                                                    View Results
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                     )}
                 </div>
             )}

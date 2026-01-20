@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 from config import SERVER_CONFIG, MODEL_CONFIGS, DEFAULT_MODEL
-from inference import ASAGInferenceEngine, grade_answer, embed_text
 
 # Configure logging
 logging.basicConfig(
@@ -24,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global engine instance
-engine: Optional[ASAGInferenceEngine] = None
+engine = None
 
 
 @asynccontextmanager
@@ -32,8 +31,13 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager - initialize model on startup."""
     global engine
     logger.info("Initializing ASAG inference engine...")
-    engine = ASAGInferenceEngine(model_name=DEFAULT_MODEL)
-    logger.info(f"Engine ready with model: {engine.hf_model_name}")
+    try:
+        from inference import ASAGInferenceEngine
+        engine = ASAGInferenceEngine(model_name=DEFAULT_MODEL)
+        logger.info(f"Engine ready with model: {engine.hf_model_name}")
+    except Exception as e:
+        logger.error(f"Failed to initialize engine: {e}")
+        logger.info("Service will start without model - some endpoints will be unavailable")
     yield
     logger.info("Shutting down ASAG service")
 
@@ -49,7 +53,7 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,33 +65,29 @@ app.add_middleware(
 # ========================
 
 class EmbedRequest(BaseModel):
-    """Request model for text embedding."""
     text: str = Field(..., description="Text to embed")
     model: Optional[str] = Field(None, description="Model to use (optional)")
 
 
 class EmbedResponse(BaseModel):
-    """Response model for text embedding."""
     embedding: List[float]
     dimension: int
     model: str
 
 
 class RubricDimension(BaseModel):
-    """Model for a single rubric dimension."""
     name: str = Field(..., description="Name of the rubric dimension")
     text: str = Field(..., description="Description/requirement for this dimension")
     weight: Optional[float] = Field(1.0, description="Weight for aggregation")
 
 
 class GradeRequest(BaseModel):
-    """Request model for grading."""
     question_id: Optional[str] = Field(None, description="Question identifier")
     student_id: Optional[str] = Field(None, description="Student identifier")
     answer_text: str = Field(..., description="Student's answer text")
     rubric_dims: Optional[List[RubricDimension]] = Field(
         None, 
-        description="Rubric dimensions (optional if using stored rubrics)"
+        description="Rubric dimensions (optional if using reference_answer)"
     )
     reference_answer: Optional[str] = Field(
         None,
@@ -100,7 +100,6 @@ class GradeRequest(BaseModel):
 
 
 class HighlightSpan(BaseModel):
-    """Model for an evidence highlight span."""
     text: str
     score: float
     char_start: Optional[int] = None
@@ -108,14 +107,12 @@ class HighlightSpan(BaseModel):
 
 
 class DimensionResult(BaseModel):
-    """Model for per-dimension grading result."""
     score: float
     confidence: float
     highlights: List[HighlightSpan] = []
 
 
 class GradeResponse(BaseModel):
-    """Response model for grading."""
     overall_score: float
     per_dimension: Dict[str, DimensionResult]
     feedback: List[str]
@@ -123,26 +120,22 @@ class GradeResponse(BaseModel):
 
 
 class BatchGradeRequest(BaseModel):
-    """Request model for batch grading."""
     answers: List[str] = Field(..., description="List of student answers")
     rubric_dims: List[RubricDimension] = Field(..., description="Rubric dimensions")
 
 
 class BatchGradeResponse(BaseModel):
-    """Response model for batch grading."""
     results: List[GradeResponse]
     total_time_ms: float
 
 
 class HealthResponse(BaseModel):
-    """Response model for health check."""
     status: str
     model: str
     device: str
 
 
 class ModelInfo(BaseModel):
-    """Model information."""
     name: str
     hf_name: str
     dimension: int
@@ -150,9 +143,38 @@ class ModelInfo(BaseModel):
 
 
 class ModelsResponse(BaseModel):
-    """Response model for available models."""
     models: List[ModelInfo]
     current_model: str
+
+
+class SplitRubricRequest(BaseModel):
+    text: str = Field(..., description="Reference answer text")
+    num_dims: Optional[int] = Field(None, description="Number of dimensions to generate")
+
+
+class SplitRubricResponse(BaseModel):
+    dimensions: List[str]
+    count: int
+
+
+class ValidateAnswerRequest(BaseModel):
+    text: str = Field(..., description="Student answer text")
+
+
+class ValidateAnswerResponse(BaseModel):
+    valid: bool
+    word_count: int
+    issues: List[str]
+
+
+class SimilarityRequest(BaseModel):
+    text1: str = Field(..., description="First text")
+    text2: str = Field(..., description="Second text")
+
+
+class SimilarityResponse(BaseModel):
+    similarity: float
+    confidence: float
 
 
 # ========================
@@ -163,7 +185,11 @@ class ModelsResponse(BaseModel):
 async def health_check():
     """Check service health and model status."""
     if engine is None:
-        raise HTTPException(status_code=503, detail="Model not initialized")
+        return HealthResponse(
+            status="degraded",
+            model="none",
+            device="none"
+        )
     
     return HealthResponse(
         status="healthy",
@@ -193,11 +219,7 @@ async def list_models():
 
 @app.post("/embed", response_model=EmbedResponse, tags=["Inference"])
 async def embed_endpoint(request: EmbedRequest):
-    """
-    Generate embedding for input text.
-    
-    Returns a dense vector representation of the input text.
-    """
+    """Generate embedding for input text."""
     if engine is None:
         raise HTTPException(status_code=503, detail="Model not initialized")
     
@@ -216,15 +238,7 @@ async def embed_endpoint(request: EmbedRequest):
 
 @app.post("/grade", response_model=GradeResponse, tags=["Inference"])
 async def grade_endpoint(request: GradeRequest):
-    """
-    Grade a student answer against rubric dimensions.
-    
-    Provides:
-    - Overall score (0-1)
-    - Per-dimension scores with confidence
-    - Evidence span highlights
-    - Textual feedback
-    """
+    """Grade a student answer against rubric dimensions."""
     if engine is None:
         raise HTTPException(status_code=503, detail="Model not initialized")
     
@@ -232,10 +246,10 @@ async def grade_endpoint(request: GradeRequest):
     
     try:
         # Extract rubric dimensions
-        if request.rubric_dims:
+        if request.rubric_dims and len(request.rubric_dims) > 0:
             rubric_texts = [dim.text for dim in request.rubric_dims]
             rubric_names = [dim.name for dim in request.rubric_dims]
-            weights = [dim.weight for dim in request.rubric_dims]
+            weights = [dim.weight or 1.0 for dim in request.rubric_dims]
         elif request.reference_answer:
             # Auto-generate rubrics from reference answer
             from utils.preprocessing import split_into_rubric_dims
@@ -247,6 +261,8 @@ async def grade_endpoint(request: GradeRequest):
                 status_code=400,
                 detail="Either rubric_dims or reference_answer must be provided"
             )
+        
+        logger.info(f"Grading with {len(rubric_texts)} rubric dimensions")
         
         # Perform grading
         result = engine.grade(
@@ -264,38 +280,39 @@ async def grade_endpoint(request: GradeRequest):
         result["metadata"]["student_id"] = request.student_id
         
         # Convert to response model
-        per_dimension = {
-            name: DimensionResult(
+        per_dimension = {}
+        for name, data in result["per_dimension"].items():
+            highlights = []
+            for h in data.get("highlights", []):
+                highlights.append(HighlightSpan(
+                    text=h.get("text", ""),
+                    score=h.get("score", 0.0),
+                    char_start=h.get("char_start"),
+                    char_end=h.get("char_end")
+                ))
+            per_dimension[name] = DimensionResult(
                 score=data["score"],
                 confidence=data["confidence"],
-                highlights=[
-                    HighlightSpan(**h) for h in data["highlights"]
-                ]
+                highlights=highlights
             )
-            for name, data in result["per_dimension"].items()
-        }
         
         return GradeResponse(
             overall_score=result["overall_score"],
             per_dimension=per_dimension,
-            feedback=result["feedback"],
-            metadata=result["metadata"]
+            feedback=result.get("feedback", []),
+            metadata=result.get("metadata", {})
         )
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Grading error: {e}")
+        logger.error(f"Grading error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/grade/batch", response_model=BatchGradeResponse, tags=["Inference"])
 async def batch_grade_endpoint(request: BatchGradeRequest):
-    """
-    Grade multiple student answers efficiently.
-    
-    Optimized for batch processing with shared rubric encoding.
-    """
+    """Grade multiple student answers efficiently."""
     if engine is None:
         raise HTTPException(status_code=503, detail="Model not initialized")
     
@@ -304,7 +321,7 @@ async def batch_grade_endpoint(request: BatchGradeRequest):
     try:
         rubric_texts = [dim.text for dim in request.rubric_dims]
         rubric_names = [dim.name for dim in request.rubric_dims]
-        weights = [dim.weight for dim in request.rubric_dims]
+        weights = [dim.weight or 1.0 for dim in request.rubric_dims]
         
         batch_results = engine.batch_grade(
             student_answers=request.answers,
@@ -317,20 +334,19 @@ async def batch_grade_endpoint(request: BatchGradeRequest):
         
         results = []
         for result in batch_results:
-            per_dimension = {
-                name: DimensionResult(
+            per_dimension = {}
+            for name, data in result["per_dimension"].items():
+                per_dimension[name] = DimensionResult(
                     score=data["score"],
                     confidence=data["confidence"],
                     highlights=[]
                 )
-                for name, data in result["per_dimension"].items()
-            }
             
             results.append(GradeResponse(
                 overall_score=result["overall_score"],
                 per_dimension=per_dimension,
-                feedback=result["feedback"],
-                metadata=result["metadata"]
+                feedback=result.get("feedback", []),
+                metadata=result.get("metadata", {})
             ))
         
         return BatchGradeResponse(
@@ -339,20 +355,99 @@ async def batch_grade_endpoint(request: BatchGradeRequest):
         )
     
     except Exception as e:
-        logger.error(f"Batch grading error: {e}")
+        logger.error(f"Batch grading error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/rubric/split", response_model=SplitRubricResponse, tags=["Rubric"])
+async def split_rubric_endpoint(request: SplitRubricRequest):
+    """Split reference answer into rubric dimensions."""
+    try:
+        from utils.preprocessing import split_into_rubric_dims
+        
+        dimensions = split_into_rubric_dims(
+            request.text,
+            num_dims=request.num_dims
+        )
+        
+        logger.info(f"Split reference into {len(dimensions)} dimensions")
+        
+        return SplitRubricResponse(
+            dimensions=dimensions,
+            count=len(dimensions)
+        )
+    except Exception as e:
+        logger.error(f"Rubric splitting error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/validate", response_model=ValidateAnswerResponse, tags=["Validation"])
+async def validate_answer_endpoint(request: ValidateAnswerRequest):
+    """Validate student answer quality."""
+    try:
+        text = request.text.strip() if request.text else ""
+        issues = []
+        
+        # Word count check
+        words = text.split() if text else []
+        word_count = len(words)
+        
+        if word_count < 3:
+            issues.append("Answer is too short (minimum 3 words)")
+        
+        # Check for excessive repetition
+        if word_count > 10:
+            unique_words = len(set(word.lower() for word in words))
+            if unique_words / word_count < 0.3:
+                issues.append("Answer contains excessive repetition")
+        
+        # Check for placeholder text
+        placeholders = ["lorem ipsum", "test", "asdf", "xxxx", "todo", "placeholder"]
+        text_lower = text.lower()
+        if any(ph in text_lower for ph in placeholders):
+            issues.append("Answer contains placeholder text")
+        
+        valid = len(issues) == 0
+        
+        return ValidateAnswerResponse(
+            valid=valid,
+            word_count=word_count,
+            issues=issues
+        )
+    except Exception as e:
+        logger.error(f"Validation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/similarity", response_model=SimilarityResponse, tags=["Inference"])
+async def similarity_endpoint(request: SimilarityRequest):
+    """Compute semantic similarity between two texts."""
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Model not initialized")
+    
+    try:
+        from utils.scorer import compute_cosine_similarity, compute_confidence
+        
+        # Encode both texts
+        emb1 = engine.encode_single(request.text1)
+        emb2 = engine.encode_single(request.text2)
+        
+        # Compute similarity
+        similarity = compute_cosine_similarity(emb1, emb2)
+        confidence = compute_confidence(similarity)
+        
+        return SimilarityResponse(
+            similarity=float(similarity),
+            confidence=float(confidence)
+        )
+    except Exception as e:
+        logger.error(f"Similarity computation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/train", tags=["Training"])
 async def train_endpoint(background_tasks: BackgroundTasks):
-    """
-    Trigger model training (admin only).
-    
-    This endpoint starts training in the background.
-    """
-    # TODO: Add authentication for admin-only access
-    # TODO: Implement training trigger with data path
-    
+    """Trigger model training (admin only)."""
     return {
         "status": "Training endpoint placeholder",
         "message": "Use the train.py script for training"

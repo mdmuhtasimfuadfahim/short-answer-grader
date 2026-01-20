@@ -20,7 +20,8 @@ const LoginPage = () => {
             const result = await login(email, password);
 
             if (result && result.success) {
-                const redirectPath = result?.data?.user.role === 'teacher' ? '/teacher' : '/student';
+                // Use result.user directly from the login response
+                const redirectPath = result.user?.role === 'teacher' ? '/teacher' : '/student';
                 navigate(redirectPath);
             } else {
                 setError(result?.error || 'Login failed. Please try again.');

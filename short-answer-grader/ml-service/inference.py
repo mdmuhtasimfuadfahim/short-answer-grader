@@ -6,7 +6,6 @@ import torch
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModel
 import logging
 
 from config import MODEL_CONFIGS, DEFAULT_MODEL, INFERENCE_CONFIG
@@ -29,12 +28,6 @@ logger = logging.getLogger(__name__)
 class ASAGInferenceEngine:
     """
     Main inference engine for Automated Short Answer Grading.
-    
-    Supports multiple encoder models and provides:
-    - Text embedding
-    - Rubric-based scoring
-    - Explainability (evidence spans)
-    - Confidence estimation
     """
     
     def __init__(
@@ -43,14 +36,6 @@ class ASAGInferenceEngine:
         device: Optional[str] = None,
         use_sentence_transformers: bool = True
     ):
-        """
-        Initialize the inference engine.
-        
-        Args:
-            model_name: Model key from MODEL_CONFIGS or HuggingFace model name
-            device: Device to use ('cuda', 'cpu', or None for auto)
-            use_sentence_transformers: Use sentence-transformers library (recommended)
-        """
         self.model_name = model_name
         self.use_sentence_transformers = use_sentence_transformers
         
@@ -62,26 +47,25 @@ class ASAGInferenceEngine:
         
         # Get model config
         if model_name in MODEL_CONFIGS:
-            self.model_config = MODEL_CONFIGS[model_name]
-            self.hf_model_name = self.model_config["name"]
+            self.config = MODEL_CONFIGS[model_name]
+            self.hf_model_name = self.config["name"]
         else:
-            self.model_config = {"name": model_name, "dimension": 768}
             self.hf_model_name = model_name
+            self.config = {"dimension": 384, "name": model_name}
+        
+        logger.info(f"Loading model: {self.hf_model_name} on {self.device}")
         
         # Load model
         self._load_model()
-        
-        logger.info(f"Initialized ASAG engine with {self.hf_model_name} on {self.device}")
     
     def _load_model(self):
-        """Load the encoder model and tokenizer."""
-        if self.use_sentence_transformers:
+        """Load the sentence transformer model."""
+        try:
             self.model = SentenceTransformer(self.hf_model_name, device=self.device)
-            self.tokenizer = self.model.tokenizer
-        else:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.hf_model_name)
-            self.model = AutoModel.from_pretrained(self.hf_model_name).to(self.device)
-            self.model.eval()
+            logger.info(f"Model loaded successfully: {self.hf_model_name}")
+        except Exception as e:
+            logger.error(f"Failed to load model: {e}")
+            raise
     
     def encode(
         self,
@@ -89,97 +73,46 @@ class ASAGInferenceEngine:
         normalize: bool = True,
         show_progress: bool = False
     ) -> np.ndarray:
-        """
-        Encode texts to embeddings.
+        """Encode multiple texts into embeddings."""
+        if not texts:
+            return np.array([])
         
-        Args:
-            texts: List of text strings
-            normalize: Whether to L2 normalize embeddings
-            show_progress: Show progress bar
-            
-        Returns:
-            Numpy array of embeddings (N x D)
-        """
         # Preprocess texts
-        texts = [preprocess_text(t) for t in texts]
+        processed = [preprocess_text(t) for t in texts]
         
-        if self.use_sentence_transformers:
-            embeddings = self.model.encode(
-                texts,
-                normalize_embeddings=normalize,
-                show_progress_bar=show_progress,
-                convert_to_numpy=True
-            )
-        else:
-            # Manual encoding with HuggingFace model
-            with torch.no_grad():
-                inputs = self.tokenizer(
-                    texts,
-                    padding=True,
-                    truncation=True,
-                    max_length=INFERENCE_CONFIG["max_seq_length"],
-                    return_tensors="pt"
-                ).to(self.device)
-                
-                outputs = self.model(**inputs)
-                
-                # Mean pooling
-                attention_mask = inputs["attention_mask"]
-                token_embeddings = outputs.last_hidden_state
-                mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-                sum_embeddings = torch.sum(token_embeddings * mask_expanded, dim=1)
-                sum_mask = mask_expanded.sum(dim=1).clamp(min=1e-9)
-                embeddings = (sum_embeddings / sum_mask).cpu().numpy()
-                
-                if normalize:
-                    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-                    embeddings = embeddings / np.maximum(norms, 1e-9)
+        embeddings = self.model.encode(
+            processed,
+            normalize_embeddings=normalize,
+            show_progress_bar=show_progress,
+            convert_to_numpy=True
+        )
         
         return embeddings
     
     def encode_single(self, text: str, normalize: bool = True) -> np.ndarray:
-        """Encode a single text to embedding."""
-        return self.encode([text], normalize=normalize)[0]
+        """Encode a single text into an embedding."""
+        processed = preprocess_text(text)
+        embedding = self.model.encode(
+            processed,
+            normalize_embeddings=normalize,
+            convert_to_numpy=True
+        )
+        return embedding
     
     def get_token_embeddings(self, text: str) -> Tuple[List[str], np.ndarray]:
-        """
-        Get per-token embeddings for explainability.
+        """Get token-level embeddings for explainability."""
+        # Simple tokenization
+        tokens = text.split()
+        if not tokens:
+            return [], np.array([])
         
-        Args:
-            text: Input text
-            
-        Returns:
-            Tuple of (tokens, token_embeddings)
-        """
-        text = preprocess_text(text)
+        # Encode each token individually (simplified approach)
+        token_embeddings = []
+        for token in tokens:
+            emb = self.encode_single(token)
+            token_embeddings.append(emb)
         
-        with torch.no_grad():
-            inputs = self.tokenizer(
-                text,
-                padding=True,
-                truncation=True,
-                max_length=INFERENCE_CONFIG["max_seq_length"],
-                return_tensors="pt"
-            ).to(self.device)
-            
-            if self.use_sentence_transformers:
-                outputs = self.model[0].auto_model(**inputs)
-            else:
-                outputs = self.model(**inputs)
-            
-            token_embeddings = outputs.last_hidden_state[0].cpu().numpy()
-            tokens = self.tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
-        
-        # Filter out special tokens
-        valid_indices = [
-            i for i, t in enumerate(tokens) 
-            if t not in self.tokenizer.all_special_tokens
-        ]
-        
-        filtered_tokens = [tokens[i] for i in valid_indices]
-        filtered_embeddings = token_embeddings[valid_indices]
-        
-        return filtered_tokens, filtered_embeddings
+        return tokens, np.array(token_embeddings)
     
     def grade(
         self,
@@ -189,19 +122,7 @@ class ASAGInferenceEngine:
         weights: Optional[List[float]] = None,
         compute_explanations: bool = True
     ) -> Dict:
-        """
-        Grade a student answer against rubric dimensions.
-        
-        Args:
-            student_answer: The student's response text
-            rubric_dims: List of rubric dimension texts/requirements
-            rubric_names: Optional names for each dimension
-            weights: Optional weights for aggregation
-            compute_explanations: Whether to compute evidence spans
-            
-        Returns:
-            Grading result dictionary
-        """
+        """Grade a student answer against rubric dimensions."""
         if not rubric_names:
             rubric_names = [f"Dimension {i+1}" for i in range(len(rubric_dims))]
         
@@ -229,15 +150,17 @@ class ASAGInferenceEngine:
             # Compute explanations if requested
             highlights = []
             if compute_explanations:
-                tokens, token_embeddings = self.get_token_embeddings(student_answer)
-                contributions = compute_token_contributions(
-                    tokens, token_embeddings, dim_embedding, method="attention"
-                )
-                highlights = extract_evidence_spans(
-                    student_answer,
-                    contributions,
-                    top_k=INFERENCE_CONFIG["top_k_spans"]
-                )
+                try:
+                    tokens, token_embeddings = self.get_token_embeddings(student_answer)
+                    if len(tokens) > 0 and len(token_embeddings) > 0:
+                        contributions = compute_token_contributions(
+                            tokens, token_embeddings, dim_embedding, method="attention"
+                        )
+                        highlights = extract_evidence_spans(
+                            student_answer, contributions, top_k=3
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to compute explanations: {e}")
             
             # Generate feedback
             feedback = generate_feedback(dim_name, score, highlights, dim_text, confidence)
@@ -246,15 +169,7 @@ class ASAGInferenceEngine:
             dimension_results[dim_name] = {
                 "score": round(score, 4),
                 "confidence": round(confidence, 4),
-                "highlights": [
-                    {
-                        "text": h["text"],
-                        "score": round(h["score"], 4),
-                        "char_start": h.get("char_start"),
-                        "char_end": h.get("char_end")
-                    }
-                    for h in highlights
-                ]
+                "highlights": highlights
             }
         
         # Aggregate overall score
@@ -277,40 +192,38 @@ class ASAGInferenceEngine:
         rubric_names: Optional[List[str]] = None,
         weights: Optional[List[float]] = None
     ) -> List[Dict]:
-        """
-        Grade multiple student answers efficiently.
-        
-        Args:
-            student_answers: List of student responses
-            rubric_dims: List of rubric dimension texts
-            rubric_names: Optional names for dimensions
-            weights: Optional weights
-            
-        Returns:
-            List of grading result dictionaries
-        """
+        """Batch grade multiple student answers."""
         if not rubric_names:
             rubric_names = [f"Dimension {i+1}" for i in range(len(rubric_dims))]
         
-        # Batch encode all texts
-        student_embeddings = self.encode(student_answers, show_progress=True)
+        # Encode all student answers
+        student_embeddings = self.encode(student_answers)
+        
+        # Encode rubric dimensions (shared across all answers)
         rubric_embeddings = self.encode(rubric_dims)
         
         results = []
-        for student_embedding, student_answer in zip(student_embeddings, student_answers):
+        for student_embedding in student_embeddings:
             dimension_results = {}
             scores_list = []
+            feedback_texts = []
             
-            for dim_name, dim_embedding in zip(rubric_names, rubric_embeddings):
+            for i, (dim_name, dim_text, dim_embedding) in enumerate(
+                zip(rubric_names, rubric_dims, rubric_embeddings)
+            ):
                 similarity = compute_cosine_similarity(student_embedding, dim_embedding)
                 score = scale_similarity(similarity)
                 confidence = compute_confidence(similarity)
                 
                 scores_list.append(score)
+                
+                feedback = generate_feedback(dim_name, score, [], dim_text, confidence)
+                feedback_texts.append(feedback)
+                
                 dimension_results[dim_name] = {
                     "score": round(score, 4),
                     "confidence": round(confidence, 4),
-                    "highlights": []  # Skip for batch efficiency
+                    "highlights": []
                 }
             
             overall_score = aggregate_scores(scores_list, weights)
@@ -318,14 +231,17 @@ class ASAGInferenceEngine:
             results.append({
                 "overall_score": round(overall_score, 4),
                 "per_dimension": dimension_results,
-                "feedback": [],
-                "metadata": {"model": self.hf_model_name}
+                "feedback": feedback_texts,
+                "metadata": {
+                    "model": self.hf_model_name,
+                    "model_version": "v1.0"
+                }
             })
         
         return results
 
 
-# Global engine instance (lazy initialization)
+# Global engine instance
 _engine: Optional[ASAGInferenceEngine] = None
 
 
@@ -344,34 +260,13 @@ def grade_answer(
     weights: Optional[List[float]] = None,
     model_name: str = DEFAULT_MODEL
 ) -> Dict:
-    """
-    Convenience function to grade a single answer.
-    
-    Args:
-        student_answer: Student's response
-        rubric_dims: Rubric dimension texts
-        rubric_names: Names for dimensions
-        weights: Aggregation weights
-        model_name: Model to use
-        
-    Returns:
-        Grading result dictionary
-    """
+    """Convenience function to grade a single answer."""
     engine = get_engine(model_name)
     return engine.grade(student_answer, rubric_dims, rubric_names, weights)
 
 
 def embed_text(text: str, model_name: str = DEFAULT_MODEL) -> List[float]:
-    """
-    Convenience function to embed a single text.
-    
-    Args:
-        text: Input text
-        model_name: Model to use
-        
-    Returns:
-        Embedding as list of floats
-    """
+    """Convenience function to embed a single text."""
     engine = get_engine(model_name)
     embedding = engine.encode_single(text)
     return embedding.tolist()

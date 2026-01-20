@@ -29,4 +29,11 @@ router.post('/submissions/:id/regrade', gradingController.regradeSubmission);
 router.get('/questions/:questionId/submissions', authorize('teacher', 'admin'), gradingController.getQuestionSubmissions);
 router.put('/submissions/:id/override', authorize('teacher', 'admin'), gradingController.overrideScore);
 
+// Batch grading (teacher only)
+router.post(
+    '/batch-grade',
+    authorize('teacher', 'admin'),
+    gradingController.batchGrade
+);
+
 module.exports = router;

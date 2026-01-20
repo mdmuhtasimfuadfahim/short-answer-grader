@@ -40,7 +40,7 @@ api.interceptors.response.use(
 export const authAPI = {
     login: (email, password) => api.post('/auth/login', { email, password }),
     register: (userData) => api.post('/auth/register', userData),
-    getProfile: () => api.get('/auth/profile'),
+    getProfile: () => api.get('/auth/me'),
 };
 
 // Questions API
@@ -50,22 +50,31 @@ export const questionsAPI = {
     create: (data) => api.post('/questions', data),
     update: (id, data) => api.put(`/questions/${id}`, data),
     delete: (id) => api.delete(`/questions/${id}`),
+    getStats: (id) => api.get(`/questions/${id}/stats`),
 };
 
 // Rubrics API
 export const rubricsAPI = {
-    getByQuestion: (questionId) => api.get(`/rubrics/question/${questionId}`),
+    getAll: () => api.get('/rubrics'),
+    getById: (id) => api.get(`/rubrics/${id}`),
+    getByQuestion: (questionId) => api.get(`/rubrics?questionId=${questionId}`),
     create: (data) => api.post('/rubrics', data),
     update: (id, data) => api.put(`/rubrics/${id}`, data),
     delete: (id) => api.delete(`/rubrics/${id}`),
+    clone: (id, data) => api.post(`/rubrics/${id}/clone`, data),
+    normalize: (id) => api.post(`/rubrics/${id}/normalize`),
 };
 
 // Grading API
 export const gradingAPI = {
     submitAnswer: (data) => api.post('/grading/submit', data),
-    getSubmissions: (questionId) => api.get(`/grading/submissions/${questionId}`),
     getMySubmissions: () => api.get('/grading/my-submissions'),
-    getSubmissionById: (id) => api.get(`/grading/submission/${id}`),
+    getSubmission: (id) => api.get(`/grading/submissions/${id}`),
+    getQuestionSubmissions: (questionId) => api.get(`/grading/questions/${questionId}/submissions`),
+    overrideScore: (id, data) => api.put(`/grading/submissions/${id}/override`, data),
+    regrade: (id) => api.post(`/grading/submissions/${id}/regrade`),
+    batchGrade: (data) => api.post('/grading/batch-grade', data),
+    checkHealth: () => api.get('/grading/health'),
 };
 
 export default api;

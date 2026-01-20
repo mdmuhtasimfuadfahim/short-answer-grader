@@ -2,7 +2,7 @@ import React from 'react';
 
 const FeedbackCard = ({ feedback = [], perDimension = {} }) => {
     const dimensions = Object.entries(perDimension);
-    
+
     const getScoreBadgeClass = (score) => {
         if (score >= 0.8) return 'badge-excellent';
         if (score >= 0.6) return 'badge-good';
@@ -20,7 +20,7 @@ const FeedbackCard = ({ feedback = [], perDimension = {} }) => {
     return (
         <div className="feedback-card card">
             <h3>Feedback & Analysis</h3>
-            
+
             {/* General Feedback */}
             {feedback && feedback.length > 0 && (
                 <div className="general-feedback">
@@ -47,7 +47,7 @@ const FeedbackCard = ({ feedback = [], perDimension = {} }) => {
                                     {getScoreLabel(data.score)} ({(data.score * 100).toFixed(0)}%)
                                 </span>
                             </div>
-                            
+
                             {data.highlights && data.highlights.length > 0 && (
                                 <div className="evidence">
                                     <span className="evidence-label">Evidence found:</span>
@@ -58,7 +58,7 @@ const FeedbackCard = ({ feedback = [], perDimension = {} }) => {
                                     ))}
                                 </div>
                             )}
-                            
+
                             {(!data.highlights || data.highlights.length === 0) && data.score < 0.5 && (
                                 <div className="missing-evidence">
                                     <span className="missing-label">

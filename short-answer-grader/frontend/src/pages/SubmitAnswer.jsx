@@ -49,9 +49,9 @@ const SubmitAnswer = () => {
         try {
             setGradingStatus('Your answer is being graded by AI. This may take a few seconds...');
             
-            const res = await gradingAPI.submit({
+            const res = await gradingAPI.submitAnswer({
                 questionId,
-                answerText: answerText.trim()
+                answerText: answerText.trim()  // Changed from 'answer' to 'answerText'
             });
             
             const submission = res.data.data;

@@ -132,12 +132,57 @@ const withRetry = async (fn, maxRetries = 3, delay = 1000) => {
     throw lastError;
 };
 
+/**
+ * Split reference answer into rubric dimensions
+ * @param {string} referenceAnswer - Reference answer text
+ * @param {number} numDims - Optional number of dimensions to generate
+ */
+const splitIntoRubricDims = async (referenceAnswer, numDims = null) => {
+    const payload = {
+        text: referenceAnswer
+    };
+    
+    if (numDims) {
+        payload.num_dims = numDims;
+    }
+    
+    const response = await mlClient.post('/rubric/split', payload);
+    return response.data.dimensions || [];
+};
+
+/**
+ * Validate answer quality before grading
+ * @param {string} answerText - Student answer text
+ */
+const validateAnswer = async (answerText) => {
+    const response = await mlClient.post('/validate', {
+        text: answerText
+    });
+    return response.data;
+};
+
+/**
+ * Get embedding similarity between two texts
+ * @param {string} text1 - First text
+ * @param {string} text2 - Second text
+ */
+const computeSimilarity = async (text1, text2) => {
+    const response = await mlClient.post('/similarity', {
+        text1,
+        text2
+    });
+    return response.data;
+};
+
 module.exports = {
     checkHealth,
     getModels,
     embed,
     grade,
     batchGrade,
+    splitIntoRubricDims,
+    validateAnswer,
+    computeSimilarity,
     withRetry,
     mlClient
 };
