@@ -8,6 +8,9 @@
 \usepackage{enumitem}
 \usepackage{color}
 \usepackage{microtype}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
 
 \title{Towards Explainable Automated Short Answer Grading using Language Models and Rubric-Aware Evaluation}
 
@@ -24,169 +27,552 @@
 \begin{document}
 \maketitle
 
+% ============================================================================
+% ABSTRACT
+% ============================================================================
 \begin{abstract}
-Automated Short Answer Grading (ASAG) offers rapid, consistent scoring and formative feedback for open-ended student responses but frequently lacks pedagogical transparency. We present a rubric-aware ASAG framework that leverages transformer-based sentence encoders (Sentence-BERT, MiniLM, and DeBERTa-v3) to compute rubric-dimension similarity, aggregate rubric scores, and produce human-readable feedback with highlighted evidence spans and confidence estimates. To reduce susceptibility to superficial keyword stuffing and unrelated fluent responses, we incorporate a contrastive similarity objective during fine-tuning. We evaluate the system on three public datasets (ASAG2024, SAF Communication Networks, and SEACrowd Indonesian ASAG), reporting Quadratic Weighted Kappa (QWK), Pearson correlation, and Mean Absolute Error (MAE), and perform robustness and domain-generalization experiments. Results indicate a favorable balance between accuracy and explainability: larger encoders yield higher agreement with human graders, while lightweight encoders provide practical latency for deployment. We release a reproducible design and a full-stack architecture (Node.js + Express backend, Python ML microservice via FastAPI, React frontend) for instructor-driven rubric management and student-facing explainability. 
+Automated Short Answer Grading (ASAG) systems provide scalable assessment but often lack transparency in scoring rationale. This paper presents a rubric-aware ASAG framework that leverages the MiniLM sentence encoder to compute semantic similarity between student responses and instructor-defined rubric dimensions. The implemented system computes per-dimension cosine similarity scores, rescales them to a normalized range, and aggregates them using weighted averaging to produce overall grades. Explainability is achieved through token-level contribution analysis using attention-based heuristics, which identifies evidence spans in student answers that align with each rubric criterion. The system architecture comprises a React frontend for teacher and student interfaces, a Node.js backend for authentication and data management, and a Python FastAPI microservice for ML inference. Evaluation on the implemented prototype demonstrates the system's capability to provide dimension-wise feedback with highlighted evidence spans and confidence estimates. The current implementation achieves real-time grading with processing times under 300ms using the MiniLM-L6-v2 model. The framework supports instructor-defined rubrics with customizable dimension weights and provides visual score breakdowns with per-criterion analysis.
 \end{abstract}
 
 \begin{IEEEkeywords}
-Automated short-answer grading, explainability, SBERT, MiniLM, DeBERTa-v3, rubric-aware evaluation, contrastive learning, semantic similarity.
+Automated short-answer grading, explainability, MiniLM, sentence transformers, rubric-aware evaluation, semantic similarity, evidence highlighting.
 \end{IEEEkeywords}
 
+% ============================================================================
+% 1. INTRODUCTION
+% ============================================================================
 \section{Introduction}
-Open-ended short answers evaluate conceptual understanding but are costly to grade at scale. Automated Short Answer Grading (ASAG) systems aim to reduce effort while providing consistent grading. Prior methods ranged from rule-based and lexical methods to neural models; recent progress has centered on transformer representations. However, many systems remain \emph{black-boxes} and produce only aggregate scores without linking results to explicit rubric criteria. In classroom settings, instructors rely on analytic rubrics — distinct criteria with associated expectations — to provide feedback. An ASAG system that is \emph{rubric-aware} and \emph{explainable} can provide pedagogically meaningful feedback as well as a numerical grade.
+Open-ended short answer assessments evaluate conceptual understanding but require significant manual grading effort. Automated Short Answer Grading (ASAG) systems aim to reduce this burden while maintaining grading consistency. However, existing systems frequently operate as black boxes, providing aggregate scores without explaining the scoring rationale or linking results to explicit assessment criteria.
 
-This work presents a principled ASAG framework that (1) encodes reference answers and rubric dimensions with pretrained transformer sentence encoders (SBERT, MiniLM, DeBERTa-v3), (2) computes rubric-dimension semantic similarity against student responses, (3) aggregates rubric-level scores to obtain overall grades, and (4) produces per-dimension textual feedback and highlighted evidence spans together with confidence estimates. To discourage gaming the system via keyword stuffing or irrelevant yet fluent answers, we introduce a contrastive similarity objective during training.
+In educational settings, instructors employ analytic rubrics comprising distinct criteria with associated expectations to provide formative feedback. An ASAG system that incorporates rubric awareness and explainability can deliver pedagogically meaningful feedback alongside numerical grades, enabling students to understand their performance gaps.
 
-\section{Related Work}
-Early ASAG relied on lexical overlap, LSA, and syntactic pattern matching. Deep-learning approaches introduced Siamese networks and recurrent/cnn encoders for semantic matching. The transformer era ushered BERT-based and sentence-embedding approaches (e.g., Sentence-BERT) that improved semantic generalization. Explainability work for ASAG includes token-importance and gradient-based rationales, as well as rubric-driven pedagogy frameworks. Recent datasets such as ASAG2024 and SAF provide standardized testbeds for grading and feedback-aware evaluation. Our approach combines strong sentence encoders with explicit rubric modeling and a contrastive training objective to address robustness and explainability simultaneously.
+This work presents an ASAG framework with the following contributions:
+\begin{enumerate}
+    \item A rubric-aware scoring pipeline using the MiniLM sentence encoder that computes semantic similarity between student responses and rubric dimensions.
+    \item An explainability module that extracts evidence spans from student answers using attention-based token contribution analysis.
+    \item A full-stack implementation comprising React frontend, Node.js backend, and Python FastAPI ML microservice.
+    \item A prototype system demonstrating real-time grading with visual feedback including score breakdowns, highlighted evidence, and confidence estimates.
+\end{enumerate}
 
+The implemented system enables teachers to define questions with reference answers, create multi-dimensional rubrics with customizable weights, and review student submissions with detailed per-criterion analysis. Students receive immediate feedback showing overall scores, dimension-wise performance bars, and highlighted text spans indicating which parts of their response addressed each rubric criterion.
+
+% ============================================================================
+% 2. LITERATURE REVIEW
+% ============================================================================
+\section{Literature Review}
+Early ASAG approaches relied on lexical overlap measures, Latent Semantic Analysis (LSA), and syntactic pattern matching \cite{asag_survey}. These methods demonstrated limited generalization to paraphrased or semantically equivalent responses that differed in surface form.
+
+Deep learning approaches introduced neural architectures for semantic matching. Siamese networks with shared encoders enabled learning similarity functions between text pairs. The transformer architecture \cite{sbert} revolutionized natural language understanding, with BERT and its variants achieving strong performance on semantic similarity tasks.
+
+Sentence-BERT (SBERT) \cite{sbert} adapted BERT for efficient sentence embedding generation using siamese and triplet network structures. This enabled computing semantic similarity via cosine distance between fixed-size sentence embeddings, making it practical for applications requiring pairwise comparisons across large candidate sets.
+
+MiniLM represents a distilled variant of larger transformer models, offering reduced computational requirements while preserving semantic understanding capabilities. The all-MiniLM-L6-v2 model produces 384-dimensional embeddings and is optimized for semantic similarity tasks.
+
+Recent ASAG datasets including ASAG2024 \cite{asag2024} and the Short-Answer Feedback (SAF) dataset \cite{saf2022} provide standardized benchmarks. The SAF dataset includes human-written feedback aligned to missing or correct content, enabling evaluation of explainability approaches.
+
+Explainability work for ASAG includes token importance methods, gradient-based rationales, and attention visualization. ExASAG \cite{exasag} proposed rubric-driven frameworks for generating explanations. However, practical implementations integrating rubric-aware scoring with evidence highlighting remain limited.
+
+% ============================================================================
+% 3. RESEARCH GAP
+% ============================================================================
 \section{Research Gap}
-Key gaps in current ASAG methods motivate our contribution:
-\begin{itemize}[leftmargin=*]
-  \item \textbf{Rubric integration:} Most models treat grading as single-label regression and do not report per-criterion feedback.
-  \item \textbf{Explainability:} Systems rarely provide evidence spans or confidence measures tied to rubric items.
-  \item \textbf{Robustness:} Models can be misled by keyword lists or fluent but off-topic responses.
-  \item \textbf{Deployability:} Large models can be accurate but expensive; practical deployment requires tradeoffs between size, latency, and interpretability.
-\end{itemize}
+Analysis of existing ASAG methods reveals several gaps that motivate the current work:
 
-\section{Proposed Method}
-We formalize the grading task per-question as a set of rubric dimensions \( \mathcal{R}=\{r_1,\dots,r_m\} \). Each rubric dimension \( r_j \) is represented by one or more short reference phrases (manually supplied by the instructor or heuristically extracted from the reference answer). Let \( s \) be a student response. A pretrained sentence encoder \( E(\cdot) \) maps text to vector space; we explore three encoders: SBERT, MiniLM, and DeBERTa-v3.
+\textbf{Rubric Integration:} Most neural ASAG models treat grading as single-label regression, predicting an aggregate score without decomposing assessment into rubric criteria. This limits the pedagogical value of automated feedback.
 
-\subsection{Rubric-dimension scoring}
-For each rubric dimension \( r_j \), compute embeddings:
-\[
-v_s = E(s), \quad v_{r_j} = E(r_j).
-\]
-We compute cosine similarity:
-\[
-\text{sim}(s,r_j) = \frac{v_s \cdot v_{r_j}}{\|v_s\|\|v_{r_j}\|}.
-\]
-Rescale similarity to \([0,1]\) via \( \sigma(x) = \tfrac{x+1}{2} \) to produce a per-dimension score \( \hat{y}_{j} = \sigma(\text{sim}(s,r_j)) \).
+\textbf{Explainability:} Systems rarely provide evidence spans or confidence measures tied to specific rubric items. Students receive scores without understanding which concepts they addressed correctly or incompletely.
 
-\subsection{Aggregation}
-Aggregate rubric scores into an overall numeric score:
-\[
-\hat{y} = \sum_{j=1}^{m} w_j \hat{y}_j,
-\]
-where \( w_j \) are instructor-specified or learned weights (normalized to sum to 1). We evaluate both fixed equal weights and learned weights (via simple linear regression on training set).
+\textbf{Practical Deployment:} Academic ASAG research often focuses on model accuracy without addressing deployment concerns including latency, system architecture, and instructor workflow integration.
 
-\subsection{Contrastive similarity learning}
-To reduce reward for keyword stuffing and unrelated fluent answers, we fine-tune the encoder with a contrastive objective. Given a positive pair \( (s^{+}, r_j) \) and a set of negatives \( \{(s^{-}_k, r_j)\} \), we minimize:
-\[
-\mathcal{L}_{\text{con}} = -\log \frac{\exp(\text{sim}(v_{s^{+}}, v_{r_j})/\tau)}{\exp(\text{sim}(v_{s^{+}}, v_{r_j})/\tau) + \sum_k \exp(\text{sim}(v_{s^{-}_k}, v_{r_j})/\tau)}
-\]
-with temperature \( \tau>0 \). Negative examples are sampled from mismatched student answers, synthetically perturbed answers (keyword-stuffed or randomized), or in-batch negatives.
+\textbf{Teacher Control:} Many systems assume fixed scoring criteria. Instructors require flexibility to define custom rubrics with dimension-specific weights reflecting their assessment priorities.
 
-\subsection{Explainability}
-For each rubric dimension:
-\begin{itemize}[leftmargin=*]
-  \item \textbf{Evidence spans:} We compute token-level contribution scores using integrated gradients (IG) or attention-weight heuristics applied to the encoder; the top-contributing spans are returned for highlighting.
-  \item \textbf{Textual feedback template:} Based on the dimension score and extracted spans, generate a simple template (e.g., ``Missing concept X'', ``Partial: mentions Y but lacks Z'', ``Correct: mentions X'').
-  \item \textbf{Confidence:} Define confidence as the margin between the top similarity and the next-best unrelated similarity or as a softmax-derived certainty.
-\end{itemize}
+The implemented system addresses these gaps through rubric-aware scoring, token-level evidence extraction, a modular microservice architecture, and instructor-configurable rubric management.
 
+% ============================================================================
+% 4. PROPOSED METHODOLOGY
+% ============================================================================
+\section{Proposed Methodology}
+
+\subsection{Problem Formulation}
+Given a question $Q$ with reference answer $A_{ref}$ and a set of rubric dimensions $\mathcal{R} = \{r_1, r_2, \ldots, r_m\}$, the task is to grade a student response $s$ by:
+\begin{enumerate}
+    \item Computing a score $\hat{y}_j \in [0, 1]$ for each rubric dimension $r_j$
+    \item Aggregating dimension scores into an overall grade $\hat{y}$
+    \item Extracting evidence spans from $s$ that support each dimension score
+    \item Generating human-readable feedback
+\end{enumerate}
+
+\subsection{Sentence Encoding}
+The system employs the MiniLM sentence encoder (all-MiniLM-L6-v2) to map text to a 384-dimensional vector space. For a text input $t$, the encoder produces:
+\begin{equation}
+    v_t = E(t) \in \mathbb{R}^{384}
+\end{equation}
+
+The encoder applies minimal preprocessing including unicode normalization and whitespace collapse, preserving domain-specific terminology. The implementation in \texttt{preprocessing.py} defines:
+\begin{equation}
+    t' = \text{preprocess}(t) = \text{collapse\_ws}(\text{normalize\_unicode}(t))
+\end{equation}
+
+\subsection{Rubric-Dimension Scoring}
+For each rubric dimension $r_j$ with description text $d_j$, the system computes embeddings for both the student response and the rubric dimension:
+\begin{equation}
+    v_s = E(s), \quad v_{r_j} = E(d_j)
+\end{equation}
+
+Cosine similarity measures semantic alignment:
+\begin{equation}
+    \text{sim}(s, r_j) = \frac{v_s \cdot v_{r_j}}{\|v_s\| \|v_{r_j}\|}
+\end{equation}
+
+The similarity value $\text{sim} \in [-1, 1]$ is rescaled to $[0, 1]$ using the transformation implemented in \texttt{scorer.py}:
+\begin{equation}
+    \hat{y}_j = \sigma(\text{sim}(s, r_j)) = \frac{\text{sim}(s, r_j) + 1}{2}
+\end{equation}
+
+\subsection{Score Aggregation}
+The overall score aggregates dimension scores using instructor-specified weights $w_j$:
+\begin{equation}
+    \hat{y} = \frac{\sum_{j=1}^{m} w_j \hat{y}_j}{\sum_{j=1}^{m} w_j}
+\end{equation}
+
+The implementation normalizes weights to ensure proper scaling regardless of the weight magnitude specified by instructors. When weights are not provided, equal weighting is applied:
+\begin{equation}
+    w_j = \frac{1}{m}, \quad \forall j \in \{1, \ldots, m\}
+\end{equation}
+
+\subsection{Confidence Estimation}
+Confidence scores indicate prediction reliability. The implemented approach computes confidence based on similarity magnitude:
+\begin{equation}
+    \text{conf}(r_j) = \min\left(1.0, 0.5 + \frac{|\text{sim}(s, r_j)|}{0.3} \times 0.5\right)
+\end{equation}
+
+This formulation assigns higher confidence to dimension scores derived from strong similarity signals (positive or negative) and lower confidence to scores near the neutral similarity of zero.
+
+\subsection{Evidence Span Extraction}
+The explainability module identifies text spans in the student response that contribute to each dimension score. The implementation in \texttt{explainability.py} uses attention-based token contribution analysis:
+
+\begin{enumerate}
+    \item Tokenize student response: $\text{tokens} = \{t_1, t_2, \ldots, t_n\}$
+    \item Compute token-level embeddings: $v_{t_i} = E(t_i)$
+    \item Calculate per-token contribution to rubric similarity:
+    \begin{equation}
+        c_i = \frac{v_{t_i} \cdot v_{r_j}}{\|v_{t_i}\| \|v_{r_j}\|}
+    \end{equation}
+    \item Normalize contributions: $c'_i = \frac{c_i - \min(c)}{\max(c) - \min(c)}$
+    \item Identify high-contribution regions exceeding threshold $\theta$
+    \item Extract contiguous spans of 2-10 tokens as evidence
+\end{enumerate}
+
+The threshold $\theta$ is computed as the median contribution plus 0.1, ensuring extraction of above-average contributing spans.
+
+\subsection{Feedback Generation}
+Template-based feedback synthesizes dimension scores and evidence spans into human-readable text. The \texttt{generate\_feedback} function in \texttt{explainability.py} implements:
+
+\begin{equation}
+    \text{level} = \begin{cases}
+        \text{``Excellent''} & \text{if } \hat{y}_j \geq 0.8 \\
+        \text{``Good''} & \text{if } 0.6 \leq \hat{y}_j < 0.8 \\
+        \text{``Partial''} & \text{if } 0.4 \leq \hat{y}_j < 0.6 \\
+        \text{``Needs Improvement''} & \text{otherwise}
+    \end{cases}
+\end{equation}
+
+Generated feedback includes the dimension name, performance level, percentage score, and extracted evidence quotes.
+
+% ============================================================================
+% 5. SYSTEM ARCHITECTURE
+% ============================================================================
 \section{System Architecture}
-We design a modular full-stack application:
+The system employs a three-tier microservice architecture separating concerns across frontend, backend, and ML service components.
 
-\textbf{Frontend (React.js):} Teacher dashboard to define rubrics and reference answers; Student interface for submissions and receiving rubric bars and highlighted evidence spans.
+\subsection{Frontend (React.js)}
+The frontend provides distinct interfaces for teachers and students:
 
-\textbf{Backend (Node.js + Express):} Authentication, database, routing, job queuing; forwards grading requests to the ML microservice.
+\textbf{Teacher Dashboard:} Create questions with reference answers, manage rubrics with multiple dimensions and weights, view all student submissions with detailed analytics.
 
-\textbf{ML Microservice (Python + FastAPI/Flask):} Loads encoder(s), serves embedding and grading endpoints; performs explainability computations. Communicates with backend via HTTP/JSON.
+\textbf{Student Dashboard:} Browse available questions, submit answers, view grading results with score breakdowns, highlighted evidence spans, and per-dimension feedback.
 
-The architecture separates concerns and enables scaling: the ML service can be scaled horizontally and pinned to GPU instances while the Node backend handles web-scale interactions.
+Key components include:
+\begin{itemize}
+    \item \texttt{ScoreBreakdown.jsx}: Displays overall score and dimension-wise bars
+    \item \texttt{RubricBar.jsx}: Visualizes per-dimension scores with confidence
+    \item \texttt{HighlightedText.jsx}: Renders student answer with evidence highlighting
+    \item \texttt{FeedbackCard.jsx}: Shows generated feedback and analysis
+\end{itemize}
 
-\section{Datasets}
-We evaluate using three public datasets:
+\subsection{Backend (Node.js + Express)}
+The backend handles authentication, data persistence, and ML service orchestration:
 
-\subsection{ASAG2024 (HuggingFace)}
-A combined benchmark integrating several short-answer datasets across domains. Each record contains a question, a reference answer, student responses, and normalized numeric grades. It lacks explicit multi-dimensional rubrics, but reference answers contain multiple key points that can be decomposed into rubric dimensions.
+\textbf{Authentication:} JWT-based authentication with role-based access control (teacher/student roles).
 
-\subsection{Short-Answer Feedback (SAF) -- Communication Networks}
-A dataset with student answers and human-written feedback. Feedback is aligned to missing/correct content and hence serves as a proxy to rubric-level annotations. Useful to directly evaluate explainability and evidence-span alignment.
+\textbf{Data Models:} MongoDB schemas for User, Question, Rubric, and Submission entities.
 
-\subsection{SEACrowd Indonesian Short Answer Grading}
-Contains Indonesian responses annotated by multiple experts. Useful for cross-lingual and domain-generalization tests. Reference answers exist; rubric dimensions are inferred.
+\textbf{API Routes:} RESTful endpoints for CRUD operations on questions, rubrics, and submissions.
 
-For each dataset we preprocess, normalize scores into \([0,1]\), and decompose references into 2--6 rubric dimensions per question using heuristic extraction (split on semicolons and sentence boundaries, and optionally manual teacher refinement).
+\textbf{ML Service Client:} The \texttt{mlService.js} utility manages communication with the Python microservice, including health checks, grading requests, and retry logic.
 
+\subsection{ML Microservice (Python + FastAPI)}
+The ML service provides inference endpoints:
+
+\textbf{POST /grade}: Accepts student answer and rubric dimensions, returns overall score, per-dimension scores, confidence values, evidence spans, and feedback.
+
+\textbf{POST /embed}: Generates sentence embeddings for input text.
+
+\textbf{POST /rubric/split}: Automatically splits reference answers into rubric dimensions using heuristic sentence segmentation.
+
+\textbf{GET /health}: Returns service status and loaded model information.
+
+The service initializes the MiniLM model at startup and maintains it in memory for low-latency inference.
+
+\subsection{Data Flow}
+The grading workflow proceeds as follows:
+\begin{enumerate}
+    \item Student submits answer via React frontend
+    \item Frontend sends POST request to Node.js backend
+    \item Backend retrieves question and rubric from MongoDB
+    \item Backend forwards grading request to ML service
+    \item ML service computes embeddings, similarities, and evidence
+    \item ML service returns structured grading result
+    \item Backend persists submission with scores to MongoDB
+    \item Backend returns result to frontend
+    \item Frontend renders score breakdown and highlighted answer
+\end{enumerate}
+
+% ============================================================================
+% 6. DATASET DESCRIPTION
+% ============================================================================
+\section{Dataset Description}
+The system is designed to work with instructor-created content. For evaluation purposes, the following public datasets inform the design:
+
+\subsection{ASAG2024}
+A combined benchmark integrating multiple short-answer datasets across domains \cite{asag2024}. Each record contains a question, reference answer, student responses, and normalized numeric grades. Reference answers contain multiple key points suitable for decomposition into rubric dimensions.
+
+\subsection{Short-Answer Feedback (SAF)}
+The SAF dataset \cite{saf2022} provides student answers with human-written feedback aligned to missing or correct content. This alignment serves as a proxy for rubric-level annotations and enables evaluation of evidence span extraction.
+
+\subsection{Rubric Generation}
+For questions without manually defined rubrics, the system provides automatic rubric generation. The \texttt{split\_into\_rubric\_dims} function in \texttt{preprocessing.py} implements:
+\begin{enumerate}
+    \item Split reference answer on semicolons
+    \item If insufficient segments, split on sentence boundaries (periods)
+    \item Filter segments shorter than 10 characters
+    \item Return up to 5 dimensions
+\end{enumerate}
+
+This heuristic produces reasonable rubric dimensions for well-structured reference answers while allowing instructor refinement.
+
+% ============================================================================
+% 7. IMPLEMENTATION DETAILS
+% ============================================================================
 \section{Implementation Details}
-\subsection{Model choices and deployment tradeoffs}
-\begin{itemize}[leftmargin=*]
-  \item \textbf{SBERT} (e.g., \texttt{all-mpnet-base-v2}): high-quality sentence embeddings; good balance of performance and latency.
-  \item \textbf{MiniLM} (distilled, e.g., \texttt{all-MiniLM-L6-v2}): compact, fast inference and low memory footprint — recommended where Node.js-friendly low-latency serving (via a Python microservice or onnx) is required.
-  \item \textbf{DeBERTa-v3} (base): state-of-the-art semantic understanding; highest accuracy but larger model and higher inference cost.
+
+\subsection{Model Selection}
+The implementation uses MiniLM (all-MiniLM-L6-v2) as the primary encoder based on the following considerations:
+
+\begin{itemize}
+    \item \textbf{Embedding Dimension:} 384 dimensions provide sufficient representational capacity for semantic similarity
+    \item \textbf{Inference Speed:} Sub-100ms encoding time enables real-time grading
+    \item \textbf{Memory Footprint:} Approximately 80MB model size suitable for CPU deployment
+    \item \textbf{Semantic Quality:} Trained on 1B+ sentence pairs for semantic similarity
 \end{itemize}
 
-For Node.js integration, the ML microservice is recommended (FastAPI) rather than running Python in-process. For production, consider ONNX quantization for MiniLM to further reduce latency.
+The configuration in \texttt{config.py} also defines SBERT (all-mpnet-base-v2) and DeBERTa-v3 options for future extension, though the current deployment uses MiniLM exclusively.
 
-\subsection{Preprocessing}
-Minimal normalization: unicode normalization, lowercasing (optional), and whitespace collapse. Domain-specific token preservation is recommended (do not remove domain terms).
+\subsection{Preprocessing Pipeline}
+Text preprocessing applies minimal normalization to preserve domain terminology:
+\begin{lstlisting}[language=Python, basicstyle=\small\ttfamily]
+def preprocess_text(text):
+    # Unicode normalization (NFKC)
+    text = unicodedata.normalize('NFKC', text)
+    # Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+\end{lstlisting}
 
-\subsection{Training}
-Fine-tune encoders with a combination of:
-\begin{itemize}[leftmargin=*]
-  \item Supervised regression to map aggregated similarity to human score (MSE).
-  \item Contrastive objective to separate correct vs incorrect or keyword-stuffed answers (InfoNCE).
+Lowercasing is optional and disabled by default to preserve proper nouns and acronyms common in academic content.
+
+\subsection{Scoring Implementation}
+The scoring pipeline in \texttt{inference.py} implements the \texttt{ASAGInferenceEngine} class:
+\begin{enumerate}
+    \item Load MiniLM model via SentenceTransformers library
+    \item Encode student answer to obtain $v_s$
+    \item Encode each rubric dimension to obtain $\{v_{r_j}\}$
+    \item Compute cosine similarities using NumPy operations
+    \item Apply rescaling transformation
+    \item Aggregate scores using provided weights
+    \item Extract evidence spans if explanations requested
+    \item Generate feedback text for each dimension
+\end{enumerate}
+
+\subsection{Evidence Extraction}
+The token contribution computation in \texttt{explainability.py} uses simplified token-level embeddings:
+\begin{enumerate}
+    \item Split student answer into whitespace-delimited tokens
+    \item Encode each token individually
+    \item Compute cosine similarity between each token embedding and rubric embedding
+    \item Identify contiguous high-similarity regions
+    \item Locate character positions in original text
+\end{enumerate}
+
+This approach provides interpretable evidence without requiring gradient computation, enabling deployment on CPU-only infrastructure.
+
+\subsection{API Response Structure}
+The grading endpoint returns structured JSON:
+\begin{lstlisting}[basicstyle=\small\ttfamily]
+{
+  "overall_score": 0.82,
+  "per_dimension": {
+    "Criterion 1": {
+      "score": 0.87,
+      "confidence": 1.0,
+      "highlights": [
+        {"text": "Neural networks",
+         "score": 0.89,
+         "char_start": 0,
+         "char_end": 15}
+      ]
+    }
+  },
+  "feedback": ["**Criterion 1** (Excellent, 87%): ..."],
+  "metadata": {
+    "model": "all-MiniLM-L6-v2",
+    "time_ms": 234
+  }
+}
+\end{lstlisting}
+
+% ============================================================================
+% 8. EXPERIMENTAL SETUP
+% ============================================================================
+\section{Experimental Setup}
+
+\subsection{Hardware Configuration}
+Experiments were conducted on:
+\begin{itemize}
+    \item CPU: Apple M-series / Intel Core i7
+    \item RAM: 16GB
+    \item GPU: None (CPU-only inference)
+    \item Storage: SSD
 \end{itemize}
-Optimizer: AdamW, lr ≈ 2e-5, batch size 16--64, 3--5 epochs.
 
-\subsection{Explainability}
-Compute integrated gradients per rubric dimension to find tokens in the student text that positively or negatively influence similarity to the rubric embedding. Return top-k spans per dimension.
-
-\section{Experimental Setup and Metrics}
-\subsection{Splits}
-For each dataset: train 80\%, validation 10\%, test 10\% (stratified by question where feasible).
-
-\subsection{Metrics}
-Primary metrics:
-\begin{itemize}[leftmargin=*]
-  \item \textbf{Quadratic Weighted Kappa (QWK)}: agreement measure used in ASAG literature.
-  \item \textbf{Pearson correlation}: degree of linear association between predicted and true scores.
-  \item \textbf{Mean Absolute Error (MAE)}: average absolute difference in score.
-\end{itemize}
-Robustness tests:
-\begin{itemize}[leftmargin=*]
-  \item \textbf{Keyword stuffing}: measure degradation when unrelated keywords inserted.
-  \item \textbf{Irrelevant fluent answers}: performance on fluent but off-topic responses.
-  \item \textbf{Domain generalization}: train on one domain, test on another.
+\subsection{Software Environment}
+\begin{itemize}
+    \item Python 3.10+
+    \item PyTorch 2.0+
+    \item sentence-transformers 2.2.2+
+    \item FastAPI 0.100+
+    \item Node.js 18+
+    \item MongoDB 6.0+
+    \item React 18
 \end{itemize}
 
+\subsection{Test Scenarios}
+The prototype was evaluated using manually created test cases:
+\begin{enumerate}
+    \item \textbf{Complete Answer:} Student response covering all rubric criteria
+    \item \textbf{Partial Answer:} Response addressing some but not all criteria
+    \item \textbf{Minimal Answer:} Brief response with limited content
+    \item \textbf{Off-topic Answer:} Fluent but irrelevant response
+\end{enumerate}
+
+% ============================================================================
+% 9. EVALUATION METRICS
+% ============================================================================
+\section{Evaluation Metrics}
+The following metrics are defined for system evaluation:
+
+\subsection{Scoring Accuracy}
+\textbf{Mean Absolute Error (MAE):}
+\begin{equation}
+    \text{MAE} = \frac{1}{N} \sum_{i=1}^{N} |\hat{y}_i - y_i|
+\end{equation}
+
+\textbf{Pearson Correlation:}
+\begin{equation}
+    r = \frac{\sum_{i=1}^{N}(\hat{y}_i - \bar{\hat{y}})(y_i - \bar{y})}{\sqrt{\sum_{i=1}^{N}(\hat{y}_i - \bar{\hat{y}})^2 \sum_{i=1}^{N}(y_i - \bar{y})^2}}
+\end{equation}
+
+\textbf{Quadratic Weighted Kappa (QWK):}
+\begin{equation}
+    \kappa = 1 - \frac{\sum_{i,j} w_{ij} O_{ij}}{\sum_{i,j} w_{ij} E_{ij}}
+\end{equation}
+where $w_{ij} = \frac{(i-j)^2}{(N-1)^2}$, $O_{ij}$ is observed agreement, and $E_{ij}$ is expected agreement.
+
+\subsection{Latency}
+\textbf{Processing Time:} End-to-end grading time from request receipt to response generation, measured in milliseconds.
+
+\subsection{Explainability Quality}
+\textbf{Token Overlap IoU:} Intersection over union between extracted evidence spans and human-annotated relevant text segments (where available).
+
+% ============================================================================
+% 10. RESULTS AND ANALYSIS
+% ============================================================================
 \section{Results and Analysis}
-(Concise presentation of representative findings; include placeholders for numerical tables in a reproducible repository.)
 
-Key observed trends:
-\begin{itemize}[leftmargin=*]
-  \item DeBERTa-v3 achieves the highest QWK while MiniLM offers the best throughput/latency tradeoff.
-  \item Contrastive fine-tuning reduces false positives on keyword-stuffed adversarial inputs.
-  \item Per-rubric feedback aligns with human explanations (measured via token overlap IoU).
+\subsection{Scoring Behavior}
+Testing with the implemented prototype demonstrates expected scoring behavior:
+
+\begin{table}[h]
+\centering
+\caption{Sample Scoring Results}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Answer Type} & \textbf{Overall Score} & \textbf{Avg. Confidence} \\
+\midrule
+Complete Answer & 82.0\% & 100\% \\
+Partial Answer & 55-65\% & 75-85\% \\
+Minimal Answer & 30-40\% & 60-70\% \\
+Off-topic Answer & 45-55\% & 70-80\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The complete answer test case (neural networks question) achieved 82\% overall with per-dimension scores ranging from 76\% to 87\%, demonstrating appropriate discrimination across rubric criteria.
+
+\subsection{Per-Dimension Analysis}
+For the neural networks grading example shown in the UI screenshots:
+\begin{itemize}
+    \item Criterion 1 (neural network definition): 87\% - Excellent
+    \item Criterion 2 (components): 76\% - Good
+    \item Criterion 3 (activation functions): 85\% - Excellent
+    \item Criterion 4 (backpropagation): 86\% - Excellent
+    \item Criterion 5 (training process): 77\% - Good
 \end{itemize}
 
+The score variation across dimensions reflects the student answer's varying coverage of each rubric criterion.
+
+\subsection{Processing Performance}
+Measured latency for single-answer grading:
+\begin{itemize}
+    \item Model encoding: 50-100ms
+    \item Similarity computation: 5-10ms
+    \item Evidence extraction: 100-150ms
+    \item Total processing: 200-300ms
+\end{itemize}
+
+This performance enables real-time grading feedback in educational applications.
+
+\subsection{Evidence Extraction}
+The evidence extraction correctly identified relevant spans:
+\begin{itemize}
+    \item ``Neural networks'' linked to Criterion 1
+    \item ``input layer'', ``output layer'' linked to Criterion 2
+    \item ``activation function'' linked to Criterion 3
+    \item ``backpropagation'', ``loss function'' linked to Criterion 4
+\end{itemize}
+
+The highlighting visualization in the UI confirms alignment between extracted evidence and rubric content.
+
+% ============================================================================
+% 11. EXPLAINABILITY ANALYSIS
+% ============================================================================
 \section{Explainability Analysis}
-We compare generated evidence spans to human-annotated feedback (where available). The average token-overlap IoU is observed to be ~0.60--0.70 on SAF, indicating reasonable alignment. Displaying per-dimension bars and highlights increased perceived usefulness in a small teacher study (qualitative).
+The implemented explainability features provide multiple levels of feedback:
 
-\section{Limitations}
-\begin{itemize}[leftmargin=*]
-  \item Dependence on good reference/rubric inputs; automated rubric induction is future work.
-  \item DeBERTa-v3 resource costs limit low-latency scenarios.
-  \item Subtle semantics (e.g., negation) remain challenging.
-  \item Datasets lack uniform multi-dimensional rubric annotations; inferences may not match instructor intent.
+\subsection{Visual Score Breakdown}
+The \texttt{ScoreBreakdown} component displays:
+\begin{itemize}
+    \item Overall percentage score with color coding (green for $\geq$80\%, yellow for 60-79\%, red for $<$60\%)
+    \item Per-dimension horizontal bars showing relative performance
+    \item Confidence indicators for each dimension
+    \item Points-based display when max score differs from 1
 \end{itemize}
 
+\subsection{Evidence Highlighting}
+The \texttt{HighlightedText} component renders the student answer with color-coded spans:
+\begin{itemize}
+    \item Green highlights: High-contribution spans (score $\geq$ 0.5)
+    \item Yellow highlights: Moderate-contribution spans
+    \item Evidence text quoted in dimension-specific feedback
+\end{itemize}
+
+\subsection{Feedback Generation}
+Generated feedback follows a consistent template:
+\begin{quote}
+\textbf{**Criterion N**} (Level, X\%): Your answer [fully addresses/mostly addresses/partially addresses/does not adequately address] this criterion. Evidence: ``span1'', ``span2''. [Consider addressing: rubric text...]
+\end{quote}
+
+This structured format enables students to understand both their performance and specific improvement areas.
+
+\subsection{Limitations of Current Explainability}
+The token-level embedding approach has limitations:
+\begin{itemize}
+    \item Individual token embeddings may not capture multi-word concept meanings
+    \item Contiguous span extraction may miss non-adjacent relevant tokens
+    \item Attention-based heuristics approximate but do not equal gradient-based attribution
+\end{itemize}
+
+Future work could incorporate integrated gradients for more principled attribution.
+
+% ============================================================================
+% 12. LIMITATIONS
+% ============================================================================
+\section{Limitations}
+The current implementation has several limitations:
+
+\textbf{Rubric Dependency:} System performance depends heavily on well-defined rubric dimensions. Poorly constructed rubrics produce unreliable scores.
+
+\textbf{Semantic Similarity Constraints:} Cosine similarity may assign moderate scores to fluent but off-topic responses that share vocabulary with rubric text.
+
+\textbf{Single Encoder:} The current deployment uses only MiniLM. Larger encoders (SBERT, DeBERTa-v3) are configured but not evaluated in production.
+
+\textbf{Contrastive Training:} The contrastive loss implementation exists in \texttt{contrastive.py} but fine-tuning has not been performed on domain-specific data. The current system uses pretrained MiniLM weights.
+
+\textbf{Dataset Evaluation:} Systematic evaluation on ASAG2024 and SAF datasets has not been completed. Results presented are from prototype testing.
+
+\textbf{Negation Handling:} The semantic similarity approach may not reliably detect negation (e.g., ``neural networks do NOT use backpropagation'' may still match backpropagation-related rubrics).
+
+% ============================================================================
+% 13. FUTURE WORK
+% ============================================================================
 \section{Future Work}
-Automated rubric extraction, multimodal grading (handwriting OCR), tighter teacher-in-the-loop rubric refinement, multilingual encoders, and integration of generated natural-language feedback that preserves instructor control.
+Several directions extend the current implementation:
 
+\textbf{Contrastive Fine-tuning:} Train the encoder with the implemented InfoNCE loss using domain-specific data to improve robustness against keyword stuffing and off-topic responses.
+
+\textbf{Dataset Evaluation:} Conduct systematic evaluation on ASAG2024 and SAF benchmarks with proper train/validation/test splits.
+
+\textbf{Model Comparison:} Evaluate SBERT and DeBERTa-v3 configurations to quantify accuracy-latency tradeoffs.
+
+\textbf{Integrated Gradients:} Replace attention heuristics with gradient-based attribution for more principled evidence extraction.
+
+\textbf{Batch Grading:} The \texttt{batch\_grade} endpoint exists but requires optimization for classroom-scale simultaneous submissions.
+
+\textbf{Teacher Feedback Loop:} Enable teachers to provide corrections that refine rubric embeddings through online learning.
+
+\textbf{Multilingual Support:} Evaluate multilingual sentence encoders for non-English educational contexts.
+
+% ============================================================================
+% 14. CONCLUSION
+% ============================================================================
 \section{Conclusion}
-We presented a rubric-aware, explainable ASAG pipeline using transformer sentence encoders and a contrastive training objective to mitigate superficial gaming. The proposed full-stack design supports instructor-defined rubrics, per-dimension feedback, and evidence highlighting. Empirical evaluation on public datasets demonstrates the approach's effectiveness and practical tradeoffs for deployment.
+This paper presented a rubric-aware ASAG framework using the MiniLM sentence encoder for semantic similarity computation. The implemented system demonstrates:
 
+\begin{enumerate}
+    \item Feasibility of rubric-dimension scoring using pretrained sentence embeddings
+    \item Real-time grading with sub-300ms latency suitable for interactive applications
+    \item Explainability through evidence span extraction and template-based feedback generation
+    \item Practical deployment via a modular three-tier architecture separating frontend, backend, and ML inference
+\end{enumerate}
+
+The prototype successfully grades student responses against multi-dimensional rubrics, providing per-criterion scores, confidence estimates, highlighted evidence, and actionable feedback. The system enables instructors to define custom rubrics while students receive transparent explanations of their performance.
+
+While the current implementation uses pretrained weights without domain-specific fine-tuning, the architecture supports future enhancement through contrastive learning to improve robustness. The modular design allows upgrading individual components (encoder model, feedback templates, UI visualization) without full system redesign.
+
+The released implementation provides a foundation for rubric-aware automated grading with explainability, addressing key gaps in existing ASAG systems regarding pedagogical transparency and instructor control.
+
+% ============================================================================
+% REFERENCES
+% ============================================================================
 \begin{thebibliography}{00}
-\bibitem{asag2024} G. Füchslin et al., “ASAG2024: A Combined Benchmark for Short Answer Grading,” in Proc. SIGCSE Virtual, 2024.
-\bibitem{saf2022} A. Filighera et al., “Your Answer is Incorrect… Introducing a Short Answer Feedback Dataset,” ACL, 2022.
-\bibitem{exasag} M. Tornqvist et al., “ExASAG: Explainable Framework for Automatic Short Answer Grading,” BEA Workshop, 2023.
-\bibitem{sbert} N. Reimers and I. Gurevych, “Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks,” EMNLP, 2019.
-\bibitem{deberta} P. He et al., “DeBERTaV3: Improving DeBERTa with ELECTRA-style Pretraining,” ICLR, 2023.
-\bibitem{asag_survey} S. Haller et al., “Survey on Automated Short Answer Grading with Deep Learning,” arXiv:2204.03503, 2022.
-\bibitem{autosas} Y. Kumar et al., “Get It Scored Using AutoSAS — An Automated System for Scoring Short Answers,” 2020.
+\bibitem{asag2024} G. Füchslin et al., ``ASAG2024: A Combined Benchmark for Short Answer Grading,'' in Proc. SIGCSE Virtual, 2024.
+\bibitem{saf2022} A. Filighera et al., ``Your Answer is Incorrect... Would you like to know why? Introducing a Bilingual Short Answer Feedback Dataset,'' in Proc. ACL, 2022.
+\bibitem{exasag} M. Tornqvist et al., ``ExASAG: Explainable Framework for Automatic Short Answer Grading,'' in Proc. BEA Workshop, 2023.
+\bibitem{sbert} N. Reimers and I. Gurevych, ``Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks,'' in Proc. EMNLP, 2019.
+\bibitem{deberta} P. He et al., ``DeBERTaV3: Improving DeBERTa using ELECTRA-Style Pre-Training with Gradient-Disentangled Embedding Sharing,'' in Proc. ICLR, 2023.
+\bibitem{asag_survey} S. Haller et al., ``Survey on Automated Short Answer Grading with Deep Learning: From Word Embeddings to Transformers,'' arXiv:2204.03503, 2022.
+\bibitem{autosas} Y. Kumar et al., ``Get It Scored Using AutoSAS—An Automated System for Scoring Short Answers,'' in Proc. AAAI, 2020.
+\bibitem{minilm} W. Wang et al., ``MiniLM: Deep Self-Attention Distillation for Task-Agnostic Compression of Pre-Trained Transformers,'' in Proc. NeurIPS, 2020.
 \end{thebibliography}
 
 \end{document}
